@@ -58,6 +58,7 @@ wss.on("connection", (socket, request) => {
     commands: [
       { type: "hello" },
       { type: "message" },
+      { type: "heartbeat" },
       { type: "ping" },
       { type: "thinking" },
       { type: "speaking" },
@@ -124,12 +125,22 @@ wss.on("connection", (socket, request) => {
         break;
       }
 
-      case "ping": {
-        send(socket, "pong", {
-          sessionId: session.sessionId
-        });
-        break;
-      }
+case "heartbeat": {
+  sessions.touch(session);
+  send(socket, "heartbeat.ok", {
+    sessionId: session.sessionId,
+    serverTime: new Date().toISOString(),
+    state: session.state
+  });
+  break;
+}
+
+case "ping": {
+  send(socket, "pong", {
+    sessionId: session.sessionId
+  });
+  break;
+}
 
       case "thinking": {
         session.state = "thinking";
