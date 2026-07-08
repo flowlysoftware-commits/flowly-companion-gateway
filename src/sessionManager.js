@@ -1,3 +1,11 @@
+import {
+  createCompanionRuntime,
+  applyProfileToRuntime,
+  applyStateToRuntime,
+  addRuntimeMessage,
+  getRuntimeSnapshot
+} from "./companionRuntime.js";
+
 export class SessionManager {
   constructor() {
     this.sessions = new Map();
@@ -30,8 +38,11 @@ export class SessionManager {
       personality: "Empático, natural, atento y cercano",
       memoryEnabled: true,
       emotionEnabled: true,
-      messages: []
+      messages: [],
+      runtime: null
     };
+
+    session.runtime = createCompanionRuntime(session);
 
     this.sessions.set(sessionId, session);
     return session;
@@ -65,6 +76,7 @@ export class SessionManager {
     session.memoryEnabled = companion.memoryEnabled ?? session.memoryEnabled;
     session.emotionEnabled = companion.emotionEnabled ?? session.emotionEnabled;
     session.lastActivity = now;
+    applyProfileToRuntime(session.runtime, companion);
 
     return session;
   }
@@ -104,13 +116,17 @@ export class SessionManager {
     if (state === "thinking") session.thinkingSince = now;
     if (state === "speaking") session.speakingSince = now;
 
-    return {
+    const event = {
       type: "session.state.changed",
       previousState,
       state,
       sessionId: session.sessionId,
       generatedAt: now
     };
+
+    applyStateToRuntime(session.runtime, event);
+
+    return event;
   }
 
   addMessage(session, message) {
@@ -126,6 +142,14 @@ export class SessionManager {
     }
 
     this.touch(session);
+  }
+
+  addRuntimeMessage(session, role, content, metadata = {}) {
+    return addRuntimeMessage(session?.runtime, role, content, metadata);
+  }
+
+  getRuntimeSnapshot(session) {
+    return getRuntimeSnapshot(session?.runtime);
   }
 
   removeSession(sessionId) {
@@ -159,7 +183,8 @@ export class SessionManager {
       personality: session.personality,
       memoryEnabled: session.memoryEnabled,
       emotionEnabled: session.emotionEnabled,
-      messageCount: session.messages.length
+      messageCount: session.messages.length,
+      runtime: this.getRuntimeSnapshot(session)
     }));
   }
 }

@@ -61,6 +61,7 @@ wss.on("connection", (socket, request) => {
       { type: "message" },
       { type: "heartbeat" },
       { type: "state.update" },
+      { type: "runtime.snapshot" },
       { type: "ping" },
       { type: "thinking" },
       { type: "speaking" },
@@ -102,6 +103,11 @@ wss.on("connection", (socket, request) => {
             sessionId: session.sessionId,
             companion: session.profile
           });
+
+          send(socket, "runtime.ready", {
+            sessionId: session.sessionId,
+            runtime: sessions.getRuntimeSnapshot(session)
+          });
         } else {
           send(socket, "companion.profile.fallback", {
             sessionId: session.sessionId,
@@ -123,28 +129,68 @@ wss.on("connection", (socket, request) => {
       }
 
       case "message": {
-        session.state = "thinking";
+        const userText = payload.text || "";
+        sessions.addRuntimeMessage(session, "user", userText, {
+          source: "unity"
+        });
+
+        const thinkingEvent = sessions.setState(session, "thinking");
+        send(socket, "session.state.changed", {
+          sessionId: session.sessionId,
+          previousState: thinkingEvent.previousState,
+          state: session.state,
+          lastActivity: session.lastActivity,
+          stateChangedAt: session.stateChangedAt,
+          generatedAt: thinkingEvent.generatedAt
+        });
+
         send(socket, "companion.thinking", {
           sessionId: session.sessionId,
-          text: payload.text || ""
+          text: userText,
+          runtime: sessions.getRuntimeSnapshot(session)
         });
 
         setTimeout(() => {
-          session.state = "speaking";
+          const speakingEvent = sessions.setState(session, "speaking");
+          send(socket, "session.state.changed", {
+            sessionId: session.sessionId,
+            previousState: speakingEvent.previousState,
+            state: session.state,
+            lastActivity: session.lastActivity,
+            stateChangedAt: session.stateChangedAt,
+            generatedAt: speakingEvent.generatedAt
+          });
+
           send(socket, "companion.response.started", {
             sessionId: session.sessionId
           });
 
-          send(socket, "companion.message", {
-            sessionId: session.sessionId,
-            text: `He recibido tu mensaje: ${payload.text || ""}`,
-            emotion: "friendly"
+          const responseText = `He recibido tu mensaje: ${userText}`;
+          sessions.addRuntimeMessage(session, "assistant", responseText, {
+            source: "runtime.echo"
           });
 
-          session.state = "idle";
+          send(socket, "companion.message", {
+            sessionId: session.sessionId,
+            text: responseText,
+            emotion: session.runtime?.emotion?.mood || "neutral",
+            runtime: sessions.getRuntimeSnapshot(session)
+          });
+
+          const idleEvent = sessions.setState(session, "idle");
+          send(socket, "session.state.changed", {
+            sessionId: session.sessionId,
+            previousState: idleEvent.previousState,
+            state: session.state,
+            lastActivity: session.lastActivity,
+            stateChangedAt: session.stateChangedAt,
+            generatedAt: idleEvent.generatedAt
+          });
+
           send(socket, "companion.response.finished", {
             sessionId: session.sessionId,
-            state: "idle"
+            state: session.state,
+            runtime: sessions.getRuntimeSnapshot(session)
           });
         }, 500);
         break;
@@ -190,7 +236,8 @@ case "ping": {
           sessionId: session.sessionId,
           state: session.state,
           lastActivity: session.lastActivity,
-          generatedAt: event.generatedAt
+          generatedAt: event.generatedAt,
+          runtime: sessions.getRuntimeSnapshot(session)
         });
         break;
       }
@@ -215,6 +262,15 @@ case "ping": {
           generatedAt: event.generatedAt
         });
 
+        break;
+      }
+
+
+      case "runtime.snapshot": {
+        send(socket, "runtime.snapshot", {
+          sessionId: session.sessionId,
+          runtime: sessions.getRuntimeSnapshot(session)
+        });
         break;
       }
 
