@@ -4,6 +4,8 @@ import {
   applyStateToRuntime,
   addRuntimeMessage,
   processRuntimeUserMessage,
+  prepareRuntimeUserMessage,
+  commitRuntimeAssistantMessage,
   getRuntimeSnapshot
 } from "./companionRuntime.js";
 
@@ -151,6 +153,14 @@ export class SessionManager {
 
   processUserMessage(session, text, metadata = {}) {
     return processRuntimeUserMessage(session?.runtime, text, metadata);
+  }
+
+  prepareUserMessage(session, text, metadata = {}) {
+    return prepareRuntimeUserMessage(session?.runtime, text, metadata);
+  }
+
+  commitAssistantMessage(session, text, metadata = {}) {
+    return commitRuntimeAssistantMessage(session?.runtime, text, metadata);
   }
 
   getRuntimeSnapshot(session) {

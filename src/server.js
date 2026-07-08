@@ -7,16 +7,13 @@ import { SessionManager } from "./sessionManager.js";
 import { safeJsonParse, send, sendError } from "./protocol.js";
 import { fetchCompanionProfile } from "./flowlyClient.js";
 import { getOpenAIEngineSnapshot } from "./engines/openaiEngine.js";
+import { processConversationTurn } from "./engines/conversationEngine.js";
 
 const PORT = Number(process.env.PORT || 3001);
 const FLOWLY_API_URL = process.env.FLOWLY_API_URL || "https://flowlyia.com";
 
 console.log("===== OPENAI =====");
-console.log(
-  process.env.OPENAI_API_KEY
-    ? "✅ OPENAI_API_KEY cargada."
-    : "❌ OPENAI_API_KEY NO encontrada."
-);
+console.log(process.env.OPENAI_API_KEY ? "✅ OPENAI_API_KEY cargada." : "❌ OPENAI_API_KEY NO encontrada.");
 console.log("==================");
 
 const app = express();
@@ -51,6 +48,14 @@ app.get("/runtime/modules", (_req, res) => {
     ok: true,
     generatedAt: new Date().toISOString(),
     modules: getModulesStatus()
+  });
+});
+
+app.get("/openai/status", (_req, res) => {
+  res.json({
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    openai: getOpenAIEngineSnapshot(null)
   });
 });
 
@@ -115,7 +120,7 @@ wss.on("connection", (socket, request) => {
       }
 
       case "message": {
-        handleMessage(socket, session, payload);
+        await handleMessage(socket, session, payload);
         break;
       }
 
@@ -246,8 +251,8 @@ async function handleHello(socket, session, payload) {
   });
 }
 
-function handleMessage(socket, session, payload) {
-  const userText = payload.text || "";
+async function handleMessage(socket, session, payload) {
+  const userText = String(payload.text || "").trim();
 
   const thinkingEvent = sessions.setState(session, "thinking");
   sendStateChanged(socket, session, thinkingEvent);
@@ -258,37 +263,64 @@ function handleMessage(socket, session, payload) {
     runtime: sessions.getRuntimeSnapshot(session)
   });
 
-  const runtimeResult = sessions.processUserMessage(session, userText, {
+  send(socket, "conversation.context.building", {
+    sessionId: session.sessionId,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
+
+  const startedAt = Date.now();
+  const conversationResult = await processConversationTurn({
+    session,
+    sessions,
+    userText,
     source: "unity"
   });
 
-  setTimeout(() => {
-    const speakingEvent = sessions.setState(session, "speaking");
-    sendStateChanged(socket, session, speakingEvent);
+  send(socket, "conversation.context.ready", {
+    sessionId: session.sessionId,
+    memoryCount: conversationResult?.context?.memories?.length || 0,
+    memoriesStored: conversationResult?.memoriesStored || [],
+    openai: conversationResult?.openai || null,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
 
-    send(socket, "companion.response.started", {
+  if (conversationResult?.memoriesStored?.length > 0) {
+    send(socket, "memory.stored", {
       sessionId: session.sessionId,
+      memories: conversationResult.memoriesStored,
       runtime: sessions.getRuntimeSnapshot(session)
     });
+  }
 
-    send(socket, "companion.message", {
-      sessionId: session.sessionId,
-      text: runtimeResult?.text || "Estoy aquí contigo.",
-      emotion: runtimeResult?.emotion || session.runtime?.emotion?.mood || "neutral",
-      memoriesStored: runtimeResult?.memoriesStored || [],
-      actions: session.runtime?.actions || [],
-      runtime: sessions.getRuntimeSnapshot(session)
-    });
+  const speakingEvent = sessions.setState(session, "speaking");
+  sendStateChanged(socket, session, speakingEvent);
 
-    const idleEvent = sessions.setState(session, "idle");
-    sendStateChanged(socket, session, idleEvent);
+  send(socket, "companion.response.started", {
+    sessionId: session.sessionId,
+    openai: conversationResult?.openai || null,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
 
-    send(socket, "companion.response.finished", {
-      sessionId: session.sessionId,
-      state: session.state,
-      runtime: sessions.getRuntimeSnapshot(session)
-    });
-  }, 500);
+  send(socket, "companion.message", {
+    sessionId: session.sessionId,
+    text: conversationResult?.text || "Estoy aquí contigo.",
+    emotion: conversationResult?.emotion || session.runtime?.emotion?.mood || "neutral",
+    memoriesStored: conversationResult?.memoriesStored || [],
+    openai: conversationResult?.openai || null,
+    latencyMs: Date.now() - startedAt,
+    actions: session.runtime?.actions || [],
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
+
+  const idleEvent = sessions.setState(session, "idle");
+  sendStateChanged(socket, session, idleEvent);
+
+  send(socket, "companion.response.finished", {
+    sessionId: session.sessionId,
+    state: session.state,
+    latencyMs: Date.now() - startedAt,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
 }
 
 function handleStateUpdate(socket, session, state) {

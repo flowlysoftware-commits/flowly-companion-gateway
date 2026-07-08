@@ -155,7 +155,7 @@ export function addRuntimeMessage(runtime, role, content, metadata = {}) {
   return message;
 }
 
-export function processRuntimeUserMessage(runtime, userText, metadata = {}) {
+export function prepareRuntimeUserMessage(runtime, userText, metadata = {}) {
   if (!runtime) return null;
 
   addRuntimeMessage(runtime, "user", userText, {
@@ -170,10 +170,30 @@ export function processRuntimeUserMessage(runtime, userText, metadata = {}) {
   const openAIContext = buildOpenAIContext(runtime, userText);
   runtime.context.lastOpenAIContext = openAIContext;
 
-  const response = buildRuntimeResponse(runtime, userText);
-  addRuntimeMessage(runtime, "assistant", response.text, {
-    source: "runtime.v2",
-    emotion: response.emotion
+  runtime.actions = buildUnityActionsFromRuntime(runtime, "user.message.received");
+  runtime.updatedAt = new Date().toISOString();
+  refreshRuntimeContext(runtime);
+
+  return {
+    context: openAIContext,
+    memoriesStored: memoryResult.stored,
+    runtime: getRuntimeSnapshot(runtime)
+  };
+}
+
+export function commitRuntimeAssistantMessage(runtime, assistantText, metadata = {}) {
+  if (!runtime) return null;
+
+  const text = String(assistantText || "").trim() || "Estoy aquí contigo. Te escucho.";
+
+  addRuntimeMessage(runtime, "assistant", text, {
+    source: metadata.source || "conversation.engine",
+    emotion: runtime.emotion?.mood || "neutral",
+    provider: metadata.provider || null,
+    model: metadata.model || null,
+    responseId: metadata.responseId || null,
+    usedFallback: Boolean(metadata.usedFallback),
+    error: metadata.error || null
   });
 
   runtime.actions = buildUnityActionsFromRuntime(runtime, "companion.message");
@@ -181,10 +201,27 @@ export function processRuntimeUserMessage(runtime, userText, metadata = {}) {
   refreshRuntimeContext(runtime);
 
   return {
-    text: response.text,
+    text,
+    emotion: runtime.emotion?.mood || "neutral",
+    runtime: getRuntimeSnapshot(runtime)
+  };
+}
+
+export function processRuntimeUserMessage(runtime, userText, metadata = {}) {
+  if (!runtime) return null;
+
+  const prepared = prepareRuntimeUserMessage(runtime, userText, metadata);
+  const response = buildRuntimeResponse(runtime, userText);
+  const committed = commitRuntimeAssistantMessage(runtime, response.text, {
+    source: "runtime.local",
+    usedFallback: true
+  });
+
+  return {
+    text: committed.text,
     emotion: response.emotion,
-    memoriesStored: memoryResult.stored,
-    context: openAIContext,
+    memoriesStored: prepared?.memoriesStored || [],
+    context: prepared?.context || null,
     runtime: getRuntimeSnapshot(runtime)
   };
 }
