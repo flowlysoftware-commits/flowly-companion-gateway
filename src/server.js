@@ -59,6 +59,7 @@ wss.on("connection", (socket, request) => {
       { type: "hello" },
       { type: "message" },
       { type: "heartbeat" },
+      { type: "state.update" },
       { type: "ping" },
       { type: "thinking" },
       { type: "speaking" },
@@ -159,10 +160,37 @@ case "ping": {
       }
 
       case "finished": {
-        session.state = "idle";
+        const event = sessions.setState(session, "idle");
+
         send(socket, "companion.response.finished", {
-          sessionId: session.sessionId
+          sessionId: session.sessionId,
+          state: session.state,
+          lastActivity: session.lastActivity,
+          generatedAt: event.generatedAt
         });
+        break;
+      }
+
+      case "state.update": {
+        const event = sessions.setState(session, payload.state);
+
+        if (!event) {
+          sendError(socket, "Invalid session state", {
+            sessionId: session.sessionId,
+            receivedState: payload.state
+          });
+          break;
+        }
+
+        send(socket, "session.state.changed", {
+          sessionId: session.sessionId,
+          previousState: event.previousState,
+          state: session.state,
+          lastActivity: session.lastActivity,
+          stateChangedAt: session.stateChangedAt,
+          generatedAt: event.generatedAt
+        });
+
         break;
       }
 
