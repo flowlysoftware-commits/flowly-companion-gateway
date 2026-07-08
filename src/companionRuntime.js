@@ -1,8 +1,49 @@
+import {
+  createPersonalityState,
+  applyPersonalityProfile
+} from "./engines/personalityEngine.js";
+import {
+  createEmotionState,
+  updateEmotionFromState,
+  updateEmotionFromUserText,
+  getEmotionSnapshot
+} from "./engines/emotionEngine.js";
+import {
+  createMemoryState,
+  applyMemorySeed,
+  processUserMemory,
+  getMemorySnapshot
+} from "./engines/memoryEngine.js";
+import {
+  buildSystemPrompt,
+  buildOpenAIContext,
+  buildRuntimeResponse
+} from "./engines/contextEngine.js";
+import {
+  createVoiceConfig,
+  applyVoiceProfile,
+  getVoiceSnapshot
+} from "./engines/voiceEngine.js";
+import { getOpenAIEngineSnapshot } from "./engines/openaiEngine.js";
+import { buildUnityActionsFromRuntime } from "./engines/actionEngine.js";
+
 export function createCompanionRuntime(session) {
   const now = new Date().toISOString();
+  const profile = {
+    loaded: false,
+    loadedAt: null,
+    companionId: session.companionId || "unknown-companion",
+    name: session.companionName || "Flow",
+    language: session.language || "es",
+    voice: session.voice || "nova",
+    model: session.model || "gpt-realtime",
+    personality: session.personality || "Empático, natural, atento y cercano",
+    memoryEnabled: session.memoryEnabled ?? true,
+    emotionEnabled: session.emotionEnabled ?? true
+  };
 
-  return {
-    runtimeVersion: "1.0.0",
+  const runtime = {
+    runtimeVersion: "2.0.0",
     sessionId: session.sessionId,
     createdAt: now,
     updatedAt: now,
@@ -11,33 +52,10 @@ export function createCompanionRuntime(session) {
       previous: session.previousState || null,
       changedAt: session.stateChangedAt || now
     },
-    profile: {
-      loaded: false,
-      loadedAt: null,
-      companionId: session.companionId || "unknown-companion",
-      name: session.companionName || "Flow",
-      language: session.language || "es",
-      voice: session.voice || "nova",
-      model: session.model || "gpt-realtime",
-      personality: session.personality || "Empático, natural, atento y cercano",
-      memoryEnabled: session.memoryEnabled ?? true,
-      emotionEnabled: session.emotionEnabled ?? true
-    },
-    emotion: {
-      mood: session.emotion || "neutral",
-      calm: 0.7,
-      joy: 0.5,
-      curiosity: 0.6,
-      empathy: 0.8,
-      stress: 0.1,
-      confidence: 0.7,
-      attention: 0.8
-    },
-    memory: {
-      enabled: session.memoryEnabled ?? true,
-      loaded: false,
-      memories: []
-    },
+    profile,
+    personality: createPersonalityState(profile),
+    emotion: createEmotionState({ mood: session.emotion || "neutral" }),
+    memory: createMemoryState({ enabled: profile.memoryEnabled }),
     conversation: {
       id: `conversation-${session.sessionId}`,
       startedAt: now,
@@ -46,17 +64,24 @@ export function createCompanionRuntime(session) {
       messages: []
     },
     context: {
-      language: session.language || "es",
-      systemPrompt: buildSystemPrompt(session),
-      readyForOpenAI: false
+      language: profile.language,
+      systemPrompt: "",
+      lastBuiltAt: null,
+      readyForOpenAI: false,
+      lastOpenAIContext: null
     },
-    voice: {
-      enabled: true,
-      provider: "openai",
-      voice: session.voice || "nova"
+    voice: createVoiceConfig(profile),
+    openai: {
+      configured: false,
+      model: profile.model,
+      mode: "placeholder-ready"
     },
-    tools: []
+    tools: [],
+    actions: []
   };
+
+  refreshRuntimeContext(runtime);
+  return runtime;
 }
 
 export function applyProfileToRuntime(runtime, companion = {}) {
@@ -78,13 +103,14 @@ export function applyProfileToRuntime(runtime, companion = {}) {
     emotionEnabled: companion.emotionEnabled ?? runtime.profile.emotionEnabled
   };
 
+  runtime.personality = applyPersonalityProfile(runtime.personality, runtime.profile);
   runtime.memory.enabled = runtime.profile.memoryEnabled;
-  runtime.context.language = runtime.profile.language;
-  runtime.context.systemPrompt = buildSystemPromptFromRuntime(runtime);
-  runtime.context.readyForOpenAI = true;
-  runtime.voice.voice = runtime.profile.voice;
+  runtime.memory = applyMemorySeed(runtime.memory, companion.memories || []);
+  runtime.voice = applyVoiceProfile(runtime.voice, runtime.profile);
+  runtime.openai = getOpenAIEngineSnapshot(runtime);
   runtime.updatedAt = now;
 
+  refreshRuntimeContext(runtime);
   return runtime;
 }
 
@@ -97,7 +123,10 @@ export function applyStateToRuntime(runtime, event) {
     changedAt: event.generatedAt
   };
 
+  runtime.emotion = updateEmotionFromState(runtime.emotion, event.state);
   runtime.updatedAt = event.generatedAt;
+  runtime.actions = buildUnityActionsFromRuntime(runtime, "session.state.changed");
+  refreshRuntimeContext(runtime);
   return runtime;
 }
 
@@ -122,7 +151,42 @@ export function addRuntimeMessage(runtime, role, content, metadata = {}) {
   }
 
   runtime.updatedAt = now;
+  refreshRuntimeContext(runtime);
   return message;
+}
+
+export function processRuntimeUserMessage(runtime, userText, metadata = {}) {
+  if (!runtime) return null;
+
+  addRuntimeMessage(runtime, "user", userText, {
+    source: metadata.source || "unity"
+  });
+
+  runtime.emotion = updateEmotionFromUserText(runtime.emotion, userText);
+
+  const memoryResult = processUserMemory(runtime.memory, userText);
+  runtime.memory = memoryResult.memory;
+
+  const openAIContext = buildOpenAIContext(runtime, userText);
+  runtime.context.lastOpenAIContext = openAIContext;
+
+  const response = buildRuntimeResponse(runtime, userText);
+  addRuntimeMessage(runtime, "assistant", response.text, {
+    source: "runtime.v2",
+    emotion: response.emotion
+  });
+
+  runtime.actions = buildUnityActionsFromRuntime(runtime, "companion.message");
+  runtime.updatedAt = new Date().toISOString();
+  refreshRuntimeContext(runtime);
+
+  return {
+    text: response.text,
+    emotion: response.emotion,
+    memoriesStored: memoryResult.stored,
+    context: openAIContext,
+    runtime: getRuntimeSnapshot(runtime)
+  };
 }
 
 export function getRuntimeSnapshot(runtime) {
@@ -135,12 +199,14 @@ export function getRuntimeSnapshot(runtime) {
     updatedAt: runtime.updatedAt,
     state: runtime.state,
     profile: runtime.profile,
-    emotion: runtime.emotion,
-    memory: {
-      enabled: runtime.memory.enabled,
-      loaded: runtime.memory.loaded,
-      memoryCount: runtime.memory.memories.length
+    personality: {
+      loaded: runtime.personality?.loaded ?? false,
+      traits: runtime.personality?.traits || [],
+      tone: runtime.personality?.tone || "natural",
+      responseStyle: runtime.personality?.responseStyle || "breve, humano y útil"
     },
+    emotion: getEmotionSnapshot(runtime.emotion),
+    memory: getMemorySnapshot(runtime.memory),
     conversation: {
       id: runtime.conversation.id,
       startedAt: runtime.conversation.startedAt,
@@ -150,30 +216,27 @@ export function getRuntimeSnapshot(runtime) {
     },
     context: {
       language: runtime.context.language,
-      readyForOpenAI: runtime.context.readyForOpenAI
+      readyForOpenAI: runtime.context.readyForOpenAI,
+      lastBuiltAt: runtime.context.lastBuiltAt,
+      hasOpenAIContext: Boolean(runtime.context.lastOpenAIContext)
     },
-    voice: runtime.voice,
-    tools: runtime.tools
+    voice: getVoiceSnapshot(runtime.voice),
+    openai: getOpenAIEngineSnapshot(runtime),
+    tools: runtime.tools,
+    actions: runtime.actions || []
   };
 }
 
-function buildSystemPrompt(session) {
-  return [
-    `Eres ${session.companionName || "Flow"}, un Companion IA de Flowly.`,
-    `Idioma principal: ${session.language || "es"}.`,
-    `Personalidad: ${session.personality || "Empático, natural, atento y cercano"}.`,
-    "Debes responder de forma natural, breve, humana y útil."
-  ].join("\n");
-}
+function refreshRuntimeContext(runtime) {
+  if (!runtime) return null;
 
-function buildSystemPromptFromRuntime(runtime) {
-  return [
-    `Eres ${runtime.profile.name}, un Companion IA de Flowly.`,
-    `Idioma principal: ${runtime.profile.language}.`,
-    `Personalidad: ${runtime.profile.personality}.`,
-    `Voz configurada: ${runtime.profile.voice}.`,
-    `Memoria: ${runtime.profile.memoryEnabled ? "activada" : "desactivada"}.`,
-    `Emociones: ${runtime.profile.emotionEnabled ? "activadas" : "desactivadas"}.`,
-    "Debes responder de forma natural, breve, humana y útil."
-  ].join("\n");
+  const now = new Date().toISOString();
+  runtime.context.language = runtime.profile.language;
+  runtime.context.systemPrompt = buildSystemPrompt(runtime);
+  runtime.context.readyForOpenAI = Boolean(runtime.profile.loaded);
+  runtime.context.lastBuiltAt = now;
+  runtime.openai = getOpenAIEngineSnapshot(runtime);
+  runtime.updatedAt = now;
+
+  return runtime.context;
 }

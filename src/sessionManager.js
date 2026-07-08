@@ -3,6 +3,7 @@ import {
   applyProfileToRuntime,
   applyStateToRuntime,
   addRuntimeMessage,
+  processRuntimeUserMessage,
   getRuntimeSnapshot
 } from "./companionRuntime.js";
 
@@ -146,6 +147,10 @@ export class SessionManager {
 
   addRuntimeMessage(session, role, content, metadata = {}) {
     return addRuntimeMessage(session?.runtime, role, content, metadata);
+  }
+
+  processUserMessage(session, text, metadata = {}) {
+    return processRuntimeUserMessage(session?.runtime, text, metadata);
   }
 
   getRuntimeSnapshot(session) {

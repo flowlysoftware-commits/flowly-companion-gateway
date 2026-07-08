@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { SessionManager } from "./sessionManager.js";
 import { safeJsonParse, send, sendError } from "./protocol.js";
 import { fetchCompanionProfile } from "./flowlyClient.js";
+import { getOpenAIEngineSnapshot } from "./engines/openaiEngine.js";
 
 const PORT = Number(process.env.PORT || 3001);
 const FLOWLY_API_URL = process.env.FLOWLY_API_URL || "https://flowlyia.com";
@@ -21,7 +22,7 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "Flowly Companion Gateway",
-    version: "1.0.0"
+    version: "2.0.0"
   });
 });
 
@@ -29,9 +30,19 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "Flowly Companion Gateway",
+    version: "2.0.0",
     generatedAt: new Date().toISOString(),
     flowlyApiUrl: FLOWLY_API_URL,
-    activeSessions: sessions.count()
+    activeSessions: sessions.count(),
+    modules: getModulesStatus()
+  });
+});
+
+app.get("/runtime/modules", (_req, res) => {
+  res.json({
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    modules: getModulesStatus()
   });
 });
 
@@ -56,12 +67,15 @@ wss.on("connection", (socket, request) => {
   send(socket, "gateway.connected", {
     sessionId: session.sessionId,
     message: "Flow Companion Gateway connected",
+    version: "2.0.0",
+    modules: getModulesStatus(),
     commands: [
       { type: "hello" },
       { type: "message" },
       { type: "heartbeat" },
       { type: "state.update" },
       { type: "runtime.snapshot" },
+      { type: "runtime.context" },
       { type: "ping" },
       { type: "thinking" },
       { type: "speaking" },
@@ -88,183 +102,62 @@ wss.on("connection", (socket, request) => {
 
     switch (payload.type) {
       case "hello": {
-        sessions.updateIdentity(session, payload);
-
-        const profileResult = await fetchCompanionProfile({
-          flowlyApiUrl: FLOWLY_API_URL,
-          companionId: session.companionId,
-          userId: session.userId
-        });
-
-        if (profileResult.ok && profileResult.companion) {
-          sessions.setProfile(session, profileResult.companion);
-
-          send(socket, "companion.profile.loaded", {
-            sessionId: session.sessionId,
-            companion: session.profile
-          });
-
-          send(socket, "runtime.ready", {
-            sessionId: session.sessionId,
-            runtime: sessions.getRuntimeSnapshot(session)
-          });
-        } else {
-          send(socket, "companion.profile.fallback", {
-            sessionId: session.sessionId,
-            message: "Flowly profile could not be loaded. Using local fallback profile.",
-            error: profileResult.error || "unknown"
-          });
-        }
-
-        send(socket, "hello.accepted", {
-          sessionId: session.sessionId,
-          companionId: session.companionId,
-          userId: session.userId,
-          companionName: session.companionName,
-          state: "ready",
-          profileLoaded: Boolean(session.profile)
-        });
-
+        await handleHello(socket, session, payload);
         break;
       }
 
       case "message": {
-        const userText = payload.text || "";
-        sessions.addRuntimeMessage(session, "user", userText, {
-          source: "unity"
-        });
-
-        const thinkingEvent = sessions.setState(session, "thinking");
-        send(socket, "session.state.changed", {
-          sessionId: session.sessionId,
-          previousState: thinkingEvent.previousState,
-          state: session.state,
-          lastActivity: session.lastActivity,
-          stateChangedAt: session.stateChangedAt,
-          generatedAt: thinkingEvent.generatedAt
-        });
-
-        send(socket, "companion.thinking", {
-          sessionId: session.sessionId,
-          text: userText,
-          runtime: sessions.getRuntimeSnapshot(session)
-        });
-
-        setTimeout(() => {
-          const speakingEvent = sessions.setState(session, "speaking");
-          send(socket, "session.state.changed", {
-            sessionId: session.sessionId,
-            previousState: speakingEvent.previousState,
-            state: session.state,
-            lastActivity: session.lastActivity,
-            stateChangedAt: session.stateChangedAt,
-            generatedAt: speakingEvent.generatedAt
-          });
-
-          send(socket, "companion.response.started", {
-            sessionId: session.sessionId
-          });
-
-          const responseText = `He recibido tu mensaje: ${userText}`;
-          sessions.addRuntimeMessage(session, "assistant", responseText, {
-            source: "runtime.echo"
-          });
-
-          send(socket, "companion.message", {
-            sessionId: session.sessionId,
-            text: responseText,
-            emotion: session.runtime?.emotion?.mood || "neutral",
-            runtime: sessions.getRuntimeSnapshot(session)
-          });
-
-          const idleEvent = sessions.setState(session, "idle");
-          send(socket, "session.state.changed", {
-            sessionId: session.sessionId,
-            previousState: idleEvent.previousState,
-            state: session.state,
-            lastActivity: session.lastActivity,
-            stateChangedAt: session.stateChangedAt,
-            generatedAt: idleEvent.generatedAt
-          });
-
-          send(socket, "companion.response.finished", {
-            sessionId: session.sessionId,
-            state: session.state,
-            runtime: sessions.getRuntimeSnapshot(session)
-          });
-        }, 500);
+        handleMessage(socket, session, payload);
         break;
       }
 
-case "heartbeat": {
-  sessions.touch(session);
-  send(socket, "heartbeat.ok", {
-    sessionId: session.sessionId,
-    serverTime: new Date().toISOString(),
-    state: session.state
-  });
-  break;
-}
+      case "heartbeat": {
+        sessions.touch(session);
+        send(socket, "heartbeat.ok", {
+          sessionId: session.sessionId,
+          serverTime: new Date().toISOString(),
+          state: session.state,
+          runtime: sessions.getRuntimeSnapshot(session)
+        });
+        break;
+      }
 
-case "ping": {
-  send(socket, "pong", {
-    sessionId: session.sessionId
-  });
-  break;
-}
+      case "ping": {
+        send(socket, "pong", {
+          sessionId: session.sessionId,
+          runtime: sessions.getRuntimeSnapshot(session)
+        });
+        break;
+      }
 
       case "thinking": {
-        session.state = "thinking";
-        send(socket, "companion.thinking", {
-          sessionId: session.sessionId
-        });
+        handleStateUpdate(socket, session, "thinking");
         break;
       }
 
       case "speaking": {
-        session.state = "speaking";
+        handleStateUpdate(socket, session, "speaking");
         send(socket, "companion.response.started", {
-          sessionId: session.sessionId
+          sessionId: session.sessionId,
+          runtime: sessions.getRuntimeSnapshot(session)
         });
         break;
       }
 
       case "finished": {
-        const event = sessions.setState(session, "idle");
-
+        handleStateUpdate(socket, session, "idle");
         send(socket, "companion.response.finished", {
           sessionId: session.sessionId,
           state: session.state,
-          lastActivity: session.lastActivity,
-          generatedAt: event.generatedAt,
           runtime: sessions.getRuntimeSnapshot(session)
         });
         break;
       }
 
       case "state.update": {
-        const event = sessions.setState(session, payload.state);
-
-        if (!event) {
-          sendError(socket, "Invalid session state", {
-            sessionId: session.sessionId,
-            receivedState: payload.state
-          });
-          break;
-        }
-
-        send(socket, "session.state.changed", {
-          sessionId: session.sessionId,
-          previousState: event.previousState,
-          state: session.state,
-          lastActivity: session.lastActivity,
-          stateChangedAt: session.stateChangedAt,
-          generatedAt: event.generatedAt
-        });
-
+        handleStateUpdate(socket, session, payload.state);
         break;
       }
-
 
       case "runtime.snapshot": {
         send(socket, "runtime.snapshot", {
@@ -274,10 +167,20 @@ case "ping": {
         break;
       }
 
+      case "runtime.context": {
+        send(socket, "runtime.context", {
+          sessionId: session.sessionId,
+          context: session.runtime?.context || null,
+          runtime: sessions.getRuntimeSnapshot(session)
+        });
+        break;
+      }
+
       default: {
         send(socket, "gateway.event.received", {
           sessionId: session.sessionId,
-          receivedType: payload.type || "unknown"
+          receivedType: payload.type || "unknown",
+          runtime: sessions.getRuntimeSnapshot(session)
         });
       }
     }
@@ -285,6 +188,7 @@ case "ping": {
 
   socket.on("close", (code, reason) => {
     console.log(`[Gateway] Disconnected: ${session.sessionId}. Code: ${code}. Reason: ${reason}`);
+    sessions.setState(session, "disconnected");
     sessions.removeSession(session.sessionId);
   });
 
@@ -292,6 +196,134 @@ case "ping": {
     console.error(`[Gateway] Socket error: ${session.sessionId}`, error);
   });
 });
+
+async function handleHello(socket, session, payload) {
+  sessions.updateIdentity(session, payload);
+
+  const profileResult = await fetchCompanionProfile({
+    flowlyApiUrl: FLOWLY_API_URL,
+    companionId: session.companionId,
+    userId: session.userId
+  });
+
+  if (profileResult.ok && profileResult.companion) {
+    sessions.setProfile(session, profileResult.companion);
+
+    send(socket, "companion.profile.loaded", {
+      sessionId: session.sessionId,
+      companion: session.profile
+    });
+
+    send(socket, "runtime.ready", {
+      sessionId: session.sessionId,
+      runtime: sessions.getRuntimeSnapshot(session)
+    });
+  } else {
+    send(socket, "companion.profile.fallback", {
+      sessionId: session.sessionId,
+      message: "Flowly profile could not be loaded. Using local fallback profile.",
+      error: profileResult.error || "unknown",
+      runtime: sessions.getRuntimeSnapshot(session)
+    });
+  }
+
+  send(socket, "hello.accepted", {
+    sessionId: session.sessionId,
+    companionId: session.companionId,
+    userId: session.userId,
+    companionName: session.companionName,
+    state: "ready",
+    profileLoaded: Boolean(session.profile),
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
+}
+
+function handleMessage(socket, session, payload) {
+  const userText = payload.text || "";
+
+  const thinkingEvent = sessions.setState(session, "thinking");
+  sendStateChanged(socket, session, thinkingEvent);
+
+  send(socket, "companion.thinking", {
+    sessionId: session.sessionId,
+    text: userText,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
+
+  const runtimeResult = sessions.processUserMessage(session, userText, {
+    source: "unity"
+  });
+
+  setTimeout(() => {
+    const speakingEvent = sessions.setState(session, "speaking");
+    sendStateChanged(socket, session, speakingEvent);
+
+    send(socket, "companion.response.started", {
+      sessionId: session.sessionId,
+      runtime: sessions.getRuntimeSnapshot(session)
+    });
+
+    send(socket, "companion.message", {
+      sessionId: session.sessionId,
+      text: runtimeResult?.text || "Estoy aquí contigo.",
+      emotion: runtimeResult?.emotion || session.runtime?.emotion?.mood || "neutral",
+      memoriesStored: runtimeResult?.memoriesStored || [],
+      actions: session.runtime?.actions || [],
+      runtime: sessions.getRuntimeSnapshot(session)
+    });
+
+    const idleEvent = sessions.setState(session, "idle");
+    sendStateChanged(socket, session, idleEvent);
+
+    send(socket, "companion.response.finished", {
+      sessionId: session.sessionId,
+      state: session.state,
+      runtime: sessions.getRuntimeSnapshot(session)
+    });
+  }, 500);
+}
+
+function handleStateUpdate(socket, session, state) {
+  const event = sessions.setState(session, state);
+
+  if (!event) {
+    sendError(socket, "Invalid session state", {
+      sessionId: session.sessionId,
+      receivedState: state
+    });
+    return;
+  }
+
+  sendStateChanged(socket, session, event);
+}
+
+function sendStateChanged(socket, session, event) {
+  if (!event) return;
+
+  send(socket, "session.state.changed", {
+    sessionId: session.sessionId,
+    previousState: event.previousState,
+    state: session.state,
+    lastActivity: session.lastActivity,
+    stateChangedAt: session.stateChangedAt,
+    generatedAt: event.generatedAt,
+    runtime: sessions.getRuntimeSnapshot(session)
+  });
+}
+
+function getModulesStatus() {
+  return {
+    runtime: "enabled",
+    profile: "enabled",
+    context: "enabled",
+    memory: "enabled-local",
+    emotion: "enabled-local",
+    personality: "enabled",
+    voice: "configured",
+    actions: "enabled",
+    openai: getOpenAIEngineSnapshot(null)
+  };
+}
 
 server.listen(PORT, () => {
   console.log(`[Gateway] Flowly Companion Gateway running on port ${PORT}`);
