@@ -89,6 +89,7 @@ wss.on("connection", (socket, request) => {
       { type: "state.update" },
       { type: "runtime.snapshot" },
       { type: "runtime.context" },
+      { type: "runtime.emotion" },
       { type: "ping" },
       { type: "thinking" },
       { type: "speaking" },
@@ -189,6 +190,11 @@ wss.on("connection", (socket, request) => {
         break;
       }
 
+      case "runtime.emotion": {
+        sendEmotionChanged(socket, session, "runtime.emotion.requested");
+        break;
+      }
+
       default: {
         send(socket, "gateway.event.received", {
           sessionId: session.sessionId,
@@ -256,6 +262,7 @@ async function handleMessage(socket, session, payload) {
 
   const thinkingEvent = sessions.setState(session, "thinking");
   sendStateChanged(socket, session, thinkingEvent);
+  sendEmotionChanged(socket, session, "state.thinking");
 
   send(socket, "companion.thinking", {
     sessionId: session.sessionId,
@@ -284,6 +291,8 @@ async function handleMessage(socket, session, payload) {
     runtime: sessions.getRuntimeSnapshot(session)
   });
 
+  sendEmotionChanged(socket, session, "user.message.processed");
+
   if (conversationResult?.memoriesStored?.length > 0) {
     send(socket, "memory.stored", {
       sessionId: session.sessionId,
@@ -294,6 +303,7 @@ async function handleMessage(socket, session, payload) {
 
   const speakingEvent = sessions.setState(session, "speaking");
   sendStateChanged(socket, session, speakingEvent);
+  sendEmotionChanged(socket, session, "state.speaking");
 
   send(socket, "companion.response.started", {
     sessionId: session.sessionId,
@@ -314,6 +324,7 @@ async function handleMessage(socket, session, payload) {
 
   const idleEvent = sessions.setState(session, "idle");
   sendStateChanged(socket, session, idleEvent);
+  sendEmotionChanged(socket, session, "state.idle");
 
   send(socket, "companion.response.finished", {
     sessionId: session.sessionId,
@@ -335,6 +346,7 @@ function handleStateUpdate(socket, session, state) {
   }
 
   sendStateChanged(socket, session, event);
+  sendEmotionChanged(socket, session, `state.${event.state}`);
 }
 
 function sendStateChanged(socket, session, event) {
@@ -348,6 +360,22 @@ function sendStateChanged(socket, session, event) {
     stateChangedAt: session.stateChangedAt,
     generatedAt: event.generatedAt,
     runtime: sessions.getRuntimeSnapshot(session)
+  });
+}
+
+function sendEmotionChanged(socket, session, reason = "emotion.updated") {
+  const runtime = sessions.getRuntimeSnapshot(session);
+  const emotion = runtime?.emotion || null;
+
+  if (!emotion) return;
+
+  send(socket, "companion.emotion.changed", {
+    sessionId: session.sessionId,
+    reason,
+    emotion,
+    state: session.state,
+    generatedAt: new Date().toISOString(),
+    runtime
   });
 }
 
