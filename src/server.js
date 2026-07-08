@@ -11,6 +11,14 @@ import { getOpenAIEngineSnapshot } from "./engines/openaiEngine.js";
 const PORT = Number(process.env.PORT || 3001);
 const FLOWLY_API_URL = process.env.FLOWLY_API_URL || "https://flowlyia.com";
 
+console.log("===== OPENAI =====");
+console.log(
+  process.env.OPENAI_API_KEY
+    ? "✅ OPENAI_API_KEY cargada."
+    : "❌ OPENAI_API_KEY NO encontrada."
+);
+console.log("==================");
+
 const app = express();
 const server = http.createServer(app);
 const sessions = new SessionManager();
