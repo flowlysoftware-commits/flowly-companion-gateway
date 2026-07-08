@@ -5,6 +5,7 @@ import http from "http";
 import { WebSocketServer } from "ws";
 import { SessionManager } from "./sessionManager.js";
 import { safeJsonParse, send, sendError } from "./protocol.js";
+import { fetchCompanionProfile } from "./flowlyClient.js";
 
 const PORT = Number(process.env.PORT || 3001);
 const FLOWLY_API_URL = process.env.FLOWLY_API_URL || "https://flowlyia.com";
@@ -88,13 +89,36 @@ wss.on("connection", (socket, request) => {
       case "hello": {
         sessions.updateIdentity(session, payload);
 
+        const profileResult = await fetchCompanionProfile({
+          flowlyApiUrl: FLOWLY_API_URL,
+          companionId: session.companionId,
+          userId: session.userId
+        });
+
+        if (profileResult.ok && profileResult.companion) {
+          sessions.setProfile(session, profileResult.companion);
+
+          send(socket, "companion.profile.loaded", {
+            sessionId: session.sessionId,
+            companion: session.profile
+          });
+        } else {
+          send(socket, "companion.profile.fallback", {
+            sessionId: session.sessionId,
+            message: "Flowly profile could not be loaded. Using local fallback profile.",
+            error: profileResult.error || "unknown"
+          });
+        }
+
         send(socket, "hello.accepted", {
           sessionId: session.sessionId,
           companionId: session.companionId,
           userId: session.userId,
           companionName: session.companionName,
-          state: "ready"
+          state: "ready",
+          profileLoaded: Boolean(session.profile)
         });
+
         break;
       }
 

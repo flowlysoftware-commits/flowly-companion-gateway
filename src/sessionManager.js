@@ -22,6 +22,14 @@ export class SessionManager {
       listeningSince: null,
       thinkingSince: null,
       speakingSince: null,
+      profile: null,
+      profileLoadedAt: null,
+      language: "es",
+      voice: "nova",
+      model: "gpt-realtime",
+      personality: "Empático, natural, atento y cercano",
+      memoryEnabled: true,
+      emotionEnabled: true,
       messages: []
     };
 
@@ -36,6 +44,27 @@ export class SessionManager {
     session.userId = payload.userId || session.userId;
     session.companionName = payload.companionName || session.companionName;
     session.lastActivity = new Date().toISOString();
+
+    return session;
+  }
+
+  setProfile(session, companion = {}) {
+    if (!session) return null;
+
+    const now = new Date().toISOString();
+
+    session.profile = companion;
+    session.profileLoadedAt = now;
+
+    session.companionId = companion.id || session.companionId;
+    session.companionName = companion.name || session.companionName;
+    session.language = companion.language || session.language;
+    session.voice = companion.voice || session.voice;
+    session.model = companion.model || session.model;
+    session.personality = companion.personality || session.personality;
+    session.memoryEnabled = companion.memoryEnabled ?? session.memoryEnabled;
+    session.emotionEnabled = companion.emotionEnabled ?? session.emotionEnabled;
+    session.lastActivity = now;
 
     return session;
   }
@@ -123,6 +152,13 @@ export class SessionManager {
       listeningSince: session.listeningSince,
       thinkingSince: session.thinkingSince,
       speakingSince: session.speakingSince,
+      profileLoadedAt: session.profileLoadedAt,
+      language: session.language,
+      voice: session.voice,
+      model: session.model,
+      personality: session.personality,
+      memoryEnabled: session.memoryEnabled,
+      emotionEnabled: session.emotionEnabled,
       messageCount: session.messages.length
     }));
   }
