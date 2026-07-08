@@ -39,6 +39,18 @@ export class SessionManager {
     session.lastActivity = new Date().toISOString();
   }
 
+  setState(session, state) {
+    if (!session) return;
+    session.state = state;
+    this.touch(session);
+    return {
+      type:"session.state.changed",
+      state,
+      sessionId: session.sessionId,
+      generatedAt:new Date().toISOString()
+    };
+  }
+
   addMessage(session, message) {
     if (!session) return;
 
